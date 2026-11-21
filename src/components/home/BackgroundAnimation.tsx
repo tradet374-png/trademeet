@@ -1,5 +1,6 @@
 // src/components/home/BackgroundAnimation.tsx
 import React, { useEffect, useRef } from 'react';
+import traderHeroBg from '../../assets/trader-hero-bg.jpg';
 
 export const BackgroundAnimation: React.FC = () => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -170,9 +171,23 @@ export const BackgroundAnimation: React.FC = () => {
   }, []);
 
   return (
-    <canvas
-      ref={canvasRef}
-      className="fixed inset-0 pointer-events-none z-0 opacity-80"
-    />
+    <div className="fixed inset-0 pointer-events-none z-0 overflow-hidden">
+      {/* High-Impact Trading Desk & Bull/Bear Background Image */}
+      <img
+        src={traderHeroBg}
+        alt="Trading Floor Background"
+        className="w-full h-full object-cover object-center scale-105 filter brightness-[0.55] contrast-125 saturate-110"
+      />
+
+      {/* Atmospheric dark gradient overlays to ensure text & form elements are 100% crisp and readable */}
+      <div className="absolute inset-0 bg-gradient-to-b from-[#0B0F19]/75 via-[#0B0F19]/50 to-[#0B0F19]/90" />
+      <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,_transparent_30%,_#0B0F19_85%)]" />
+
+      {/* Subtle animated candlestick wave overlay */}
+      <canvas
+        ref={canvasRef}
+        className="absolute inset-0 opacity-25 mix-blend-screen"
+      />
+    </div>
   );
 };
