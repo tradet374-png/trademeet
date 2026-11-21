@@ -78,7 +78,7 @@ export const App: React.FC = () => {
   const hasScreens = activeScreens.length > 0;
 
   return (
-    <div className="flex flex-col h-screen w-screen bg-[#0B0F19] text-white overflow-hidden select-none">
+    <div className="flex flex-col h-screen h-[100dvh] w-screen bg-[#0B0F19] text-white overflow-hidden select-none">
       {/* Toast Notification Banner */}
       {toastMessage && (
         <div className="fixed top-16 right-5 z-50 bg-[#151B2B]/95 backdrop-blur-md border border-[#00C896]/50 text-white px-4 py-2.5 rounded-xl shadow-2xl flex items-center gap-2.5 text-xs animate-in slide-in-from-top-2">
@@ -101,7 +101,7 @@ export const App: React.FC = () => {
       {/* Main Workspace Area + Right Sidebar */}
       <div className="flex-1 flex overflow-hidden relative">
         {/* Workspace Central Area */}
-        <div className="flex-1 flex flex-col md:flex-row overflow-hidden relative">
+        <div className="flex-1 flex flex-col md:flex-row overflow-hidden relative h-full w-full">
           {/* Multi-Screen Sharing Grid (All participants can share screens simultaneously) */}
           <div
             className={`transition-all duration-200 ${
@@ -109,7 +109,7 @@ export const App: React.FC = () => {
                 ? 'w-full h-full block'
                 : layoutMode === 'split'
                 ? hasScreens
-                  ? 'w-full md:w-3/5 lg:w-2/3 h-full block'
+                  ? 'w-full md:w-3/5 lg:w-2/3 h-[58%] md:h-full block shrink-0'
                   : 'hidden'
                 : 'hidden'
             }`}
@@ -124,7 +124,7 @@ export const App: React.FC = () => {
                 ? 'w-full h-full block'
                 : layoutMode === 'split'
                 ? hasScreens
-                  ? 'w-full md:w-2/5 lg:w-1/3 h-full block'
+                  ? 'w-full md:w-2/5 lg:w-1/3 h-[42%] md:h-full block'
                   : 'w-full h-full block'
                 : 'hidden'
             }`}
@@ -135,9 +135,13 @@ export const App: React.FC = () => {
 
         {/* Right Sidebar (Real-time Text Message Chat or Connected Traders List) */}
         {activeSidebarTab !== 'none' && (
-          <div className="w-80 md:w-96 h-full shrink-0 z-20">
-            {activeSidebarTab === 'chat' && <ChatPanel />}
-            {activeSidebarTab === 'participants' && <ParticipantList />}
+          <div className="fixed inset-x-0 bottom-16 top-14 z-30 md:static md:w-80 lg:w-96 md:h-full shrink-0 shadow-2xl">
+            {activeSidebarTab === 'chat' && (
+              <ChatPanel onClose={() => setActiveSidebarTab('none')} />
+            )}
+            {activeSidebarTab === 'participants' && (
+              <ParticipantList onClose={() => setActiveSidebarTab('none')} />
+            )}
           </div>
         )}
       </div>

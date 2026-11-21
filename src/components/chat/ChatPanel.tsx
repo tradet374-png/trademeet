@@ -15,7 +15,11 @@ import {
   Paperclip
 } from 'lucide-react';
 
-export const ChatPanel: React.FC = () => {
+interface ChatPanelProps {
+  onClose?: () => void;
+}
+
+export const ChatPanel: React.FC<ChatPanelProps> = ({ onClose }) => {
   const { messages, sendMessage, currentParticipant, currentRoom } = useSocket();
 
   const [inputVal, setInputVal] = useState('');
@@ -71,9 +75,20 @@ export const ChatPanel: React.FC = () => {
             Live Chat • Server {currentRoom?.serverNumber}
           </span>
         </div>
-        <span className="text-[11px] text-[#929BAD] font-mono">
-          {messages.length} msgs
-        </span>
+        <div className="flex items-center gap-2">
+          <span className="text-[11px] text-[#929BAD] font-mono">
+            {messages.length} msgs
+          </span>
+          {onClose && (
+            <button
+              onClick={onClose}
+              className="p-1 rounded-lg hover:bg-[#232D42] text-[#929BAD] hover:text-white transition-colors"
+              title="Close chat"
+            >
+              ✕
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Message List Stream */}

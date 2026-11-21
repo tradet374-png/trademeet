@@ -17,7 +17,11 @@ import {
   ChevronDown
 } from 'lucide-react';
 
-export const ParticipantList: React.FC = () => {
+interface ParticipantListProps {
+  onClose?: () => void;
+}
+
+export const ParticipantList: React.FC<ParticipantListProps> = ({ onClose }) => {
   const {
     participants,
     currentParticipant,
@@ -46,9 +50,20 @@ export const ParticipantList: React.FC = () => {
             Connected Traders
           </span>
         </div>
-        <span className="px-2 py-0.5 rounded-full bg-[#0B0F19] border border-[#232D42] text-[11px] font-mono text-[#00C896] font-bold">
-          {participants.length}
-        </span>
+        <div className="flex items-center gap-2">
+          <span className="px-2 py-0.5 rounded-full bg-[#0B0F19] border border-[#232D42] text-[11px] font-mono text-[#00C896] font-bold">
+            {participants.length}
+          </span>
+          {onClose && (
+            <button
+              onClick={onClose}
+              className="p-1 rounded-lg hover:bg-[#232D42] text-[#929BAD] hover:text-white transition-colors"
+              title="Close panel"
+            >
+              ✕
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Search Bar */}

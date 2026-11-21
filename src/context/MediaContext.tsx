@@ -1,8 +1,6 @@
 // src/context/MediaContext.tsx
 import React, { createContext, useContext, useEffect, useState, useRef, useCallback } from 'react';
 import { useSocket } from './SocketContext';
-import { getLiveKitToken } from '../services/api';
-import { Room as LiveKitRoom, RoomEvent, Track, RemoteParticipant, RemoteTrackPublication } from 'livekit-client';
 
 const RTC_CONFIG: RTCConfiguration = {
   iceServers: [
@@ -46,7 +44,7 @@ interface MediaContextType {
 const MediaContext = createContext<MediaContextType | null>(null);
 
 export const MediaProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const { socket, currentRoom, currentParticipant, isConnected } = useSocket();
+  const { socket, currentParticipant, isConnected, participants, activeScreens } = useSocket();
 
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [localScreenStream, setLocalScreenStream] = useState<MediaStream | null>(null);
@@ -66,14 +64,22 @@ export const MediaProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   });
   const [selectedAudioDeviceId, setSelectedAudioDeviceId] = useState('');
   const [selectedVideoDeviceId, setSelectedVideoDeviceId] = useState('');
-  const [isLiveKitActive, setIsLiveKitActive] = useState(false);
+  const [isLiveKitActive] = useState(false);
 
   const audioContextRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const animationFrameRef = useRef<number | null>(null);
+
+  // Dedicated PeerConnections for Camera & Audio
   const peerConnectionsRef = useRef<Map<string, RTCPeerConnection>>(new Map());
   const remoteStreamsRef = useRef<Map<string, MediaStream>>(new Map());
-  const livekitRoomRef = useRef<LiveKitRoom | null>(null);
+
+  // Dedicated PeerConnections for Multi-Screen Sharing
+  const screenPeerConnectionsRef = useRef<Map<string, RTCPeerConnection>>(new Map());
+  const remoteScreenStreamsRef = useRef<Map<string, MediaStream>>(new Map());
+
+  const localScreenStreamRef = useRef<MediaStream | null>(null);
+  localScreenStreamRef.current = localScreenStream;
 
   // Enumerate audio and video devices
   const updateDeviceList = useCallback(async () => {
@@ -158,7 +164,7 @@ export const MediaProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     }
   }, [socket, isConnected, isAudioMuted]);
 
-  // Request initial media permissions
+  // Request initial media permissions (non-blocking)
   const requestMediaPermissions = useCallback(async (): Promise<boolean> => {
     try {
       if (!navigator.mediaDevices?.getUserMedia) return false;
@@ -175,8 +181,8 @@ export const MediaProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       setupAudioAnalyser(stream);
       await updateDeviceList();
       return true;
-    } catch (err) {
-      // If video fails, try audio only
+    } catch {
+      // Fallback: try audio only if camera is unavailable or denied
       try {
         const audioOnly = await navigator.mediaDevices.getUserMedia({ audio: true });
         audioOnly.getAudioTracks().forEach((t) => (t.enabled = false));
@@ -189,7 +195,7 @@ export const MediaProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     }
   }, [setupAudioAnalyser, updateDeviceList]);
 
-  // Create or retrieve RTCPeerConnection for a remote peer
+  // ================= CAMERA & AUDIO WEBRTC CONNECTION =================
   const getOrCreatePeerConnection = useCallback((targetId: string, isInitiator = false) => {
     let pc = peerConnectionsRef.current.get(targetId);
     if (pc && pc.signalingState !== 'closed') {
@@ -199,20 +205,18 @@ export const MediaProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     pc = new RTCPeerConnection(RTC_CONFIG);
     peerConnectionsRef.current.set(targetId, pc);
 
-    // Add local tracks to this connection
+    // Add local camera/mic tracks to this connection
     if (localStream) {
       localStream.getTracks().forEach((track) => {
         pc!.addTrack(track, localStream);
       });
     }
 
-    // Handle remote media track arrival
+    // Handle remote camera/mic media track arrival
     pc.ontrack = (event) => {
-      const incomingStream = event.streams[0];
-      if (incomingStream) {
-        remoteStreamsRef.current.set(targetId, incomingStream);
-        setRemoteStreams(new Map(remoteStreamsRef.current));
-      }
+      const incomingStream = event.streams[0] || new MediaStream([event.track]);
+      remoteStreamsRef.current.set(targetId, incomingStream);
+      setRemoteStreams(new Map(remoteStreamsRef.current));
     };
 
     // Handle ICE candidates
@@ -221,11 +225,12 @@ export const MediaProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         socket.emit('webrtc:ice-candidate', {
           to: targetId,
           candidate: event.candidate,
+          type: 'media',
         });
       }
     };
 
-    // If initiator, create and send WebRTC offer
+    // If initiator, create and send WebRTC offer for media
     if (isInitiator) {
       pc.createOffer({ offerToReceiveAudio: true, offerToReceiveVideo: true })
         .then((offer) => pc!.setLocalDescription(offer))
@@ -234,14 +239,141 @@ export const MediaProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             socket.emit('webrtc:offer', {
               to: targetId,
               offer: pc!.localDescription,
+              type: 'media',
             });
           }
         })
-        .catch((err) => console.warn('Create offer error:', err));
+        .catch((err) => console.warn('Create offer error (media):', err));
     }
 
     return pc;
   }, [localStream, socket, isConnected]);
+
+  // ================= DEDICATED SCREEN SHARING WEBRTC =================
+  const sendScreenOfferToPeer = useCallback(async (targetId: string, screenStream: MediaStream) => {
+    try {
+      const oldPc = screenPeerConnectionsRef.current.get(targetId);
+      if (oldPc) {
+        oldPc.close();
+      }
+
+      const screenPc = new RTCPeerConnection(RTC_CONFIG);
+      screenPeerConnectionsRef.current.set(targetId, screenPc);
+
+      screenStream.getTracks().forEach((track) => {
+        screenPc.addTrack(track, screenStream);
+      });
+
+      screenPc.onicecandidate = (event) => {
+        if (event.candidate && socket && isConnected) {
+          socket.emit('webrtc:ice-candidate', {
+            to: targetId,
+            candidate: event.candidate,
+            type: 'screen',
+          });
+        }
+      };
+
+      const offer = await screenPc.createOffer();
+      await screenPc.setLocalDescription(offer);
+
+      if (socket && isConnected) {
+        socket.emit('webrtc:offer', {
+          to: targetId,
+          offer: screenPc.localDescription,
+          type: 'screen',
+        });
+      }
+    } catch (err) {
+      console.warn('Error sending screen offer to peer:', err);
+    }
+  }, [socket, isConnected]);
+
+  const handleScreenOffer = useCallback(async (from: string, offer: any) => {
+    try {
+      const oldPc = screenPeerConnectionsRef.current.get(from);
+      if (oldPc) {
+        oldPc.close();
+      }
+
+      const screenPc = new RTCPeerConnection(RTC_CONFIG);
+      screenPeerConnectionsRef.current.set(from, screenPc);
+
+      screenPc.ontrack = (event) => {
+        const incomingScreen = event.streams[0] || new MediaStream([event.track]);
+        remoteScreenStreamsRef.current.set(from, incomingScreen);
+        setRemoteScreenStreams(new Map(remoteScreenStreamsRef.current));
+      };
+
+      screenPc.onicecandidate = (event) => {
+        if (event.candidate && socket && isConnected) {
+          socket.emit('webrtc:ice-candidate', {
+            to: from,
+            candidate: event.candidate,
+            type: 'screen',
+          });
+        }
+      };
+
+      await screenPc.setRemoteDescription(new RTCSessionDescription(offer));
+      const answer = await screenPc.createAnswer();
+      await screenPc.setLocalDescription(answer);
+
+      if (socket && isConnected) {
+        socket.emit('webrtc:answer', {
+          to: from,
+          answer: screenPc.localDescription,
+          type: 'screen',
+        });
+      }
+    } catch (err) {
+      console.warn('Error handling screen offer:', err);
+    }
+  }, [socket, isConnected]);
+
+  const handleScreenAnswer = useCallback(async (from: string, answer: any) => {
+    try {
+      const screenPc = screenPeerConnectionsRef.current.get(from);
+      if (screenPc) {
+        await screenPc.setRemoteDescription(new RTCSessionDescription(answer));
+      }
+    } catch (err) {
+      console.warn('Error handling screen answer:', err);
+    }
+  }, []);
+
+  const handleScreenCandidate = useCallback(async (from: string, candidate: any) => {
+    try {
+      const screenPc = screenPeerConnectionsRef.current.get(from);
+      if (screenPc && candidate) {
+        await screenPc.addIceCandidate(new RTCIceCandidate(candidate));
+      }
+    } catch (err) {
+      console.warn('Error handling screen ICE candidate:', err);
+    }
+  }, []);
+
+  // Sync remoteScreenStreams with server activeScreens list
+  useEffect(() => {
+    const activePresenterIds = new Set(activeScreens.map((s) => s.presenterId));
+    let changed = false;
+
+    for (const presenterId of remoteScreenStreamsRef.current.keys()) {
+      if (!activePresenterIds.has(presenterId)) {
+        const pc = screenPeerConnectionsRef.current.get(presenterId);
+        if (pc) {
+          pc.close();
+        }
+        screenPeerConnectionsRef.current.delete(presenterId);
+        remoteScreenStreamsRef.current.delete(presenterId);
+        changed = true;
+      }
+    }
+
+    if (changed) {
+      setRemoteScreenStreams(new Map(remoteScreenStreamsRef.current));
+    }
+  }, [activeScreens]);
 
   // Toggle Microphone
   const toggleAudio = useCallback(async () => {
@@ -319,7 +451,7 @@ export const MediaProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
         setIsVideoOff(false);
 
-        // Update all peer connections with new video track
+        // Update all media peer connections with new video track
         peerConnectionsRef.current.forEach(async (pc) => {
           const senders = pc.getSenders();
           const videoSender = senders.find((s) => s.track?.kind === 'video');
@@ -327,13 +459,12 @@ export const MediaProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             videoSender.replaceTrack(newVideoTrack).catch(() => {});
           } else {
             pc.addTrack(newVideoTrack, stream!);
-            // Renegotiate
             try {
               const offer = await pc.createOffer();
               await pc.setLocalDescription(offer);
               const targetId = Array.from(peerConnectionsRef.current.entries()).find(([_, p]) => p === pc)?.[0];
               if (targetId && socket && isConnected) {
-                socket.emit('webrtc:offer', { to: targetId, offer });
+                socket.emit('webrtc:offer', { to: targetId, offer, type: 'media' });
               }
             } catch {}
           }
@@ -370,58 +501,75 @@ export const MediaProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     }
   }, [localStream, isVideoOff, selectedVideoDeviceId, socket, isConnected]);
 
-  // Simultaneous Screen Sharing
+  // Simultaneous Screen Sharing (Supports Desktop, Android Chrome, and iOS Camera Cast)
   const startScreenShare = useCallback(async () => {
     try {
-      if (!navigator.mediaDevices?.getDisplayMedia) {
-        alert('Screen sharing is not supported by your browser.');
-        return;
-      }
+      const isMobile = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
+      let screen: MediaStream;
 
-      const screen = await navigator.mediaDevices.getDisplayMedia({
-        video: { displaySurface: 'monitor' },
-        audio: true,
-      });
+      if (navigator.mediaDevices?.getDisplayMedia) {
+        // Standard getDisplayMedia: use clean mobile-compatible parameters
+        const constraints = isMobile
+          ? { video: true } // Mobile Android Chrome does not support audio or displaySurface constraints
+          : { video: { frameRate: { ideal: 30, max: 60 } }, audio: true };
+
+        screen = await navigator.mediaDevices.getDisplayMedia(constraints);
+      } else {
+        // iOS Safari or unsupported mobile browser fallback: Document / Screen Camera Cast
+        const userChoice = window.confirm(
+          'Mobile Safari does not allow direct web screen recording.\n\nWould you like to share your Camera View as a presentation / chart stream instead?'
+        );
+        if (!userChoice) return;
+
+        screen = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: 'environment' },
+          audio: false,
+        });
+      }
 
       setLocalScreenStream(screen);
       setIsScreenSharing(true);
 
-      const screenTrack = screen.getVideoTracks()[0];
-
-      // Add screen track to all peer connections
-      peerConnectionsRef.current.forEach(async (pc, targetId) => {
-        pc.addTrack(screenTrack, screen);
-        try {
-          const offer = await pc.createOffer();
-          await pc.setLocalDescription(offer);
-          if (socket && isConnected) {
-            socket.emit('webrtc:offer', { to: targetId, offer, type: 'screen' });
-          }
-        } catch {}
-      });
-
+      // Notify server so activeScreens in room is updated
       if (socket && isConnected) {
         socket.emit('screen:start');
       }
 
-      screenTrack.onended = () => {
-        stopScreenShare();
-      };
-    } catch (err) {
-      console.warn('Screen share canceled:', err);
+      // Send screen offer to EVERY participant currently connected
+      participants.forEach((p) => {
+        if (p.id !== currentParticipant?.id) {
+          sendScreenOfferToPeer(p.id, screen);
+        }
+      });
+
+      const screenTrack = screen.getVideoTracks()[0];
+      if (screenTrack) {
+        screenTrack.onended = () => {
+          stopScreenShare();
+        };
+      }
+    } catch (err: any) {
+      if (err.name !== 'NotAllowedError') {
+        console.warn('Screen share error:', err);
+      }
     }
-  }, [socket, isConnected]);
+  }, [socket, isConnected, participants, currentParticipant?.id, sendScreenOfferToPeer]);
 
   const stopScreenShare = useCallback(() => {
-    if (localScreenStream) {
-      localScreenStream.getTracks().forEach((t) => t.stop());
+    if (localScreenStreamRef.current) {
+      localScreenStreamRef.current.getTracks().forEach((t) => t.stop());
       setLocalScreenStream(null);
     }
     setIsScreenSharing(false);
+
+    // Close and clear our outgoing screen connections
+    screenPeerConnectionsRef.current.forEach((pc) => pc.close());
+    screenPeerConnectionsRef.current.clear();
+
     if (socket && isConnected) {
       socket.emit('screen:stop');
     }
-  }, [localScreenStream, socket, isConnected]);
+  }, [socket, isConnected]);
 
   // Device switching
   const selectAudioDevice = useCallback(async (deviceId: string) => {
@@ -471,53 +619,70 @@ export const MediaProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   useEffect(() => {
     if (!socket) return;
 
-    // 1. When a new participant joins our server, create WebRTC offer and initiate call
+    // 1. When a new participant joins our server
     const handleParticipantJoined = ({ participant }: { participant: { id: string; name: string } }) => {
       if (participant.id !== currentParticipant?.id) {
-        console.log(`📡 New participant joined (${participant.name}). Initiating WebRTC connection...`);
+        console.log(`📡 New participant joined (${participant.name}). Initiating WebRTC media connection...`);
         getOrCreatePeerConnection(participant.id, true);
+
+        // If I am currently sharing screen, send screen offer to the new participant!
+        if (localScreenStreamRef.current) {
+          sendScreenOfferToPeer(participant.id, localScreenStreamRef.current);
+        }
       }
     };
 
-    // 2. When receiving WebRTC offer from another participant
-    const handleOffer = async ({ from, offer }: { from: string; offer: any }) => {
-      try {
-        const pc = getOrCreatePeerConnection(from, false);
-        await pc.setRemoteDescription(new RTCSessionDescription(offer));
-        const answer = await pc.createAnswer();
-        await pc.setLocalDescription(answer);
+    // 2. When receiving WebRTC offer
+    const handleOffer = async ({ from, offer, type }: { from: string; offer: any; type?: string }) => {
+      if (type === 'screen') {
+        handleScreenOffer(from, offer);
+      } else {
+        try {
+          const pc = getOrCreatePeerConnection(from, false);
+          await pc.setRemoteDescription(new RTCSessionDescription(offer));
+          const answer = await pc.createAnswer();
+          await pc.setLocalDescription(answer);
 
-        socket.emit('webrtc:answer', { to: from, answer });
-      } catch (err) {
-        console.warn('WebRTC offer handling error:', err);
+          socket.emit('webrtc:answer', { to: from, answer, type: 'media' });
+        } catch (err) {
+          console.warn('WebRTC media offer handling error:', err);
+        }
       }
     };
 
     // 3. When receiving WebRTC answer
-    const handleAnswer = async ({ from, answer }: { from: string; answer: any }) => {
-      try {
-        const pc = peerConnectionsRef.current.get(from);
-        if (pc) {
-          await pc.setRemoteDescription(new RTCSessionDescription(answer));
+    const handleAnswer = async ({ from, answer, type }: { from: string; answer: any; type?: string }) => {
+      if (type === 'screen') {
+        handleScreenAnswer(from, answer);
+      } else {
+        try {
+          const pc = peerConnectionsRef.current.get(from);
+          if (pc) {
+            await pc.setRemoteDescription(new RTCSessionDescription(answer));
+          }
+        } catch (err) {
+          console.warn('WebRTC media answer handling error:', err);
         }
-      } catch (err) {
-        console.warn('WebRTC answer handling error:', err);
       }
     };
 
     // 4. When receiving ICE candidate
-    const handleCandidate = async ({ from, candidate }: { from: string; candidate: any }) => {
-      try {
-        const pc = peerConnectionsRef.current.get(from);
-        if (pc && candidate) {
-          await pc.addIceCandidate(new RTCIceCandidate(candidate));
+    const handleCandidate = async ({ from, candidate, type }: { from: string; candidate: any; type?: string }) => {
+      if (type === 'screen') {
+        handleScreenCandidate(from, candidate);
+      } else {
+        try {
+          const pc = peerConnectionsRef.current.get(from);
+          if (pc && candidate) {
+            await pc.addIceCandidate(new RTCIceCandidate(candidate));
+          }
+        } catch (err) {
+          console.warn('WebRTC media candidate handling error:', err);
         }
-      } catch (err) {
-        console.warn('WebRTC candidate handling error:', err);
       }
     };
 
-    // 5. When participant leaves, clean up connection
+    // 5. When participant leaves, clean up connections
     const handleParticipantLeft = ({ participantId }: { participantId: string }) => {
       const pc = peerConnectionsRef.current.get(participantId);
       if (pc) {
@@ -526,6 +691,14 @@ export const MediaProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       }
       remoteStreamsRef.current.delete(participantId);
       setRemoteStreams(new Map(remoteStreamsRef.current));
+
+      const screenPc = screenPeerConnectionsRef.current.get(participantId);
+      if (screenPc) {
+        screenPc.close();
+        screenPeerConnectionsRef.current.delete(participantId);
+      }
+      remoteScreenStreamsRef.current.delete(participantId);
+      setRemoteScreenStreams(new Map(remoteScreenStreamsRef.current));
     };
 
     socket.on('participant:joined', handleParticipantJoined);
@@ -541,7 +714,15 @@ export const MediaProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       socket.off('webrtc:ice-candidate', handleCandidate);
       socket.off('participant:left', handleParticipantLeft);
     };
-  }, [socket, currentParticipant?.id, getOrCreatePeerConnection]);
+  }, [
+    socket,
+    currentParticipant?.id,
+    getOrCreatePeerConnection,
+    sendScreenOfferToPeer,
+    handleScreenOffer,
+    handleScreenAnswer,
+    handleScreenCandidate,
+  ]);
 
   // Clean up on unmount
   useEffect(() => {
@@ -549,8 +730,9 @@ export const MediaProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
       if (audioContextRef.current) audioContextRef.current.close().catch(() => {});
       if (localStream) localStream.getTracks().forEach((t) => t.stop());
-      if (localScreenStream) localScreenStream.getTracks().forEach((t) => t.stop());
+      if (localScreenStreamRef.current) localScreenStreamRef.current.getTracks().forEach((t) => t.stop());
       peerConnectionsRef.current.forEach((pc) => pc.close());
+      screenPeerConnectionsRef.current.forEach((pc) => pc.close());
     };
   }, []);
 
