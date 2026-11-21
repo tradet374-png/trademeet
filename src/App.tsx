@@ -56,10 +56,10 @@ export const App: React.FC = () => {
     setIsWarping(false);
   };
 
-  // If user is NOT in a meeting room, show Home Page
+  // If user is NOT in a meeting room, show Clean Interface Page (NO background canvas, NO directories, NO footers)
   if (!currentRoom) {
     return (
-      <div className="relative min-h-screen bg-[#0B0F19] text-white flex flex-col justify-between overflow-x-hidden">
+      <div className="relative h-screen h-[100dvh] w-screen bg-[#0B0F19] text-white flex flex-col justify-between overflow-hidden select-none">
         {/* Realistic Space Travel Hyperspace Warp Animation */}
         {isWarping && warpData && (
           <SpaceWarpTransition
@@ -68,9 +68,6 @@ export const App: React.FC = () => {
             onComplete={handleWarpComplete}
           />
         )}
-
-        {/* Animated Background */}
-        <BackgroundAnimation />
 
         {/* Global Toast Alert */}
         {toastMessage && (
@@ -81,17 +78,8 @@ export const App: React.FC = () => {
           </div>
         )}
 
-        {/* Home Page Content */}
-        <div className="relative z-10 flex-1">
-          <LandingHero onJoin={handleJoin} />
-          <ServerDirectory onSelectServer={(num) => handleJoin(num, currentParticipant?.name || 'Trader')} />
-          <FeaturesShowcase />
-        </div>
-
-        {/* Home Footer */}
-        <footer className="relative z-10 border-t border-[#232D42] py-6 px-4 text-center text-xs text-[#5F6B84] bg-[#0B0F19]/90">
-          <p>© 2024 TradeMeet • Live Trading Community. Simultaneous Multi-Screen Sharing & High-Capacity Audio/Video.</p>
-        </footer>
+        {/* Main Interface Page */}
+        <LandingHero onJoin={handleJoin} />
       </div>
     );
   }
