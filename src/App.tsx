@@ -15,6 +15,7 @@ import { ChatPanel } from './components/chat/ChatPanel';
 import { ParticipantList } from './components/participants/ParticipantList';
 import { SettingsModal } from './components/meeting/SettingsModal';
 import { HostControlsModal } from './components/meeting/HostControlsModal';
+import { SpaceWarpTransition } from './components/transition/SpaceWarpTransition';
 import { Bell } from 'lucide-react';
 
 export const App: React.FC = () => {
@@ -35,20 +36,39 @@ export const App: React.FC = () => {
   const [activeSidebarTab, setActiveSidebarTab] = useState<'chat' | 'participants' | 'none'>('chat');
   const [showSettings, setShowSettings] = useState(false);
   const [showHostControls, setShowHostControls] = useState(false);
+  const [isWarping, setIsWarping] = useState(false);
+  const [warpData, setWarpData] = useState<{ serverNumber: string; name: string } | null>(null);
 
-  // Handle joining a room from the Home Page
-  const handleJoin = async (serverNumber: string, name: string) => {
-    // Request media permissions before joining room so audio/video tracks are ready for WebRTC negotiation
-    try {
-      await requestMediaPermissions();
-    } catch {}
-    joinRoom(serverNumber, name);
+  // Handle joining a room from the Home Page with Realistic Space Travel Hyperspace Warp
+  const handleJoin = (serverNumber: string, name: string) => {
+    // 1. Pre-initialize media permissions in background
+    requestMediaPermissions().catch(() => {});
+
+    // 2. Launch space travel warp animation
+    setWarpData({ serverNumber, name });
+    setIsWarping(true);
+  };
+
+  const handleWarpComplete = () => {
+    if (warpData) {
+      joinRoom(warpData.serverNumber, warpData.name);
+    }
+    setIsWarping(false);
   };
 
   // If user is NOT in a meeting room, show Home Page
   if (!currentRoom) {
     return (
       <div className="relative min-h-screen bg-[#0B0F19] text-white flex flex-col justify-between overflow-x-hidden">
+        {/* Realistic Space Travel Hyperspace Warp Animation */}
+        {isWarping && warpData && (
+          <SpaceWarpTransition
+            serverNumber={warpData.serverNumber}
+            traderName={warpData.name}
+            onComplete={handleWarpComplete}
+          />
+        )}
+
         {/* Animated Background */}
         <BackgroundAnimation />
 
