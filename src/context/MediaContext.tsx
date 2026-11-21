@@ -12,6 +12,29 @@ const RTC_CONFIG: RTCConfiguration = {
   ],
 };
 
+// Full HD 1080p Video Constraints
+const HD_1080P_VIDEO_CONSTRAINTS: MediaTrackConstraints = {
+  width: { ideal: 1920, min: 1280 },
+  height: { ideal: 1080, min: 720 },
+  frameRate: { ideal: 30, max: 60 },
+};
+
+// Boost video sender bitrate to 4 Mbps for crystal-clear 1080p transmission
+const optimizeVideoQuality = async (pc: RTCPeerConnection) => {
+  const senders = pc.getSenders();
+  const videoSender = senders.find((s) => s.track?.kind === 'video');
+  if (videoSender && videoSender.setParameters) {
+    try {
+      const params = videoSender.getParameters();
+      if (params.encodings && params.encodings.length > 0) {
+        params.encodings[0].maxBitrate = 4000000;
+        params.encodings[0].maxFramerate = 60;
+        await videoSender.setParameters(params);
+      }
+    } catch {}
+  }
+};
+
 interface MediaDeviceOptions {
   audioInputs: MediaDeviceInfo[];
   videoInputs: MediaDeviceInfo[];
@@ -174,7 +197,7 @@ export const MediaProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       if (!navigator.mediaDevices?.getUserMedia) return false;
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: true,
-        video: true,
+        video: HD_1080P_VIDEO_CONSTRAINTS,
       });
 
       // Join muted with camera off by default
@@ -517,7 +540,10 @@ export const MediaProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       if (!nextVideoOff) {
         // Turning video ON: Get camera video track
         const videoStream = await navigator.mediaDevices.getUserMedia({
-          video: selectedVideoDeviceId ? { deviceId: { exact: selectedVideoDeviceId } } : true,
+          video: {
+            ...HD_1080P_VIDEO_CONSTRAINTS,
+            ...(selectedVideoDeviceId ? { deviceId: { exact: selectedVideoDeviceId } } : {}),
+          },
           audio: false,
         });
         const newVideoTrack = videoStream.getVideoTracks()[0];
@@ -542,9 +568,11 @@ export const MediaProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           const senders = pc.getSenders();
           const videoSender = senders.find((s) => s.track?.kind === 'video');
           if (videoSender) {
-            videoSender.replaceTrack(newVideoTrack).catch(() => {});
+            await videoSender.replaceTrack(newVideoTrack).catch(() => {});
+            await optimizeVideoQuality(pc);
           } else {
             pc.addTrack(newVideoTrack, stream!);
+            await optimizeVideoQuality(pc);
             try {
               const offer = await pc.createOffer();
               await pc.setLocalDescription(offer);
@@ -596,8 +624,8 @@ export const MediaProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       if (navigator.mediaDevices?.getDisplayMedia) {
         // Standard getDisplayMedia: use clean mobile-compatible parameters
         const constraints = isMobile
-          ? { video: true } // Mobile Android Chrome does not support audio or displaySurface constraints
-          : { video: { frameRate: { ideal: 30, max: 60 } }, audio: true };
+          ? { video: { width: { ideal: 1920 }, height: { ideal: 1080 } } }
+          : { video: { width: { ideal: 1920, max: 3840 }, height: { ideal: 1080, max: 2160 }, frameRate: { ideal: 30, max: 60 } }, audio: true };
 
         screen = await navigator.mediaDevices.getDisplayMedia(constraints);
       } else {
@@ -687,7 +715,10 @@ export const MediaProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     if (localStream && !isVideoOff) {
       try {
         const newStream = await navigator.mediaDevices.getUserMedia({
-          video: { deviceId: { exact: deviceId } },
+          video: {
+            ...HD_1080P_VIDEO_CONSTRAINTS,
+            deviceId: { exact: deviceId },
+          },
         });
         const oldTrack = localStream.getVideoTracks()[0];
         const newTrack = newStream.getVideoTracks()[0];
