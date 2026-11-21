@@ -78,6 +78,10 @@ export const MediaProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const screenPeerConnectionsRef = useRef<Map<string, RTCPeerConnection>>(new Map());
   const remoteScreenStreamsRef = useRef<Map<string, MediaStream>>(new Map());
 
+  // ICE Candidate Queues to prevent race conditions before remote description is set
+  const pendingIceCandidatesRef = useRef<Map<string, RTCIceCandidateInit[]>>(new Map());
+  const pendingScreenIceCandidatesRef = useRef<Map<string, RTCIceCandidateInit[]>>(new Map());
+
   const localScreenStreamRef = useRef<MediaStream | null>(null);
   localScreenStreamRef.current = localScreenStream;
 
@@ -316,6 +320,16 @@ export const MediaProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       };
 
       await screenPc.setRemoteDescription(new RTCSessionDescription(offer));
+
+      // Flush any pending screen ICE candidates that arrived before description
+      const queuedCandidates = pendingScreenIceCandidatesRef.current.get(from) || [];
+      for (const cand of queuedCandidates) {
+        try {
+          await screenPc.addIceCandidate(new RTCIceCandidate(cand));
+        } catch {}
+      }
+      pendingScreenIceCandidatesRef.current.delete(from);
+
       const answer = await screenPc.createAnswer();
       await screenPc.setLocalDescription(answer);
 
@@ -336,6 +350,15 @@ export const MediaProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       const screenPc = screenPeerConnectionsRef.current.get(from);
       if (screenPc) {
         await screenPc.setRemoteDescription(new RTCSessionDescription(answer));
+
+        // Flush any pending screen ICE candidates
+        const queuedCandidates = pendingScreenIceCandidatesRef.current.get(from) || [];
+        for (const cand of queuedCandidates) {
+          try {
+            await screenPc.addIceCandidate(new RTCIceCandidate(cand));
+          } catch {}
+        }
+        pendingScreenIceCandidatesRef.current.delete(from);
       }
     } catch (err) {
       console.warn('Error handling screen answer:', err);
@@ -345,8 +368,12 @@ export const MediaProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const handleScreenCandidate = useCallback(async (from: string, candidate: any) => {
     try {
       const screenPc = screenPeerConnectionsRef.current.get(from);
-      if (screenPc && candidate) {
+      if (screenPc && screenPc.remoteDescription) {
         await screenPc.addIceCandidate(new RTCIceCandidate(candidate));
+      } else {
+        const queue = pendingScreenIceCandidatesRef.current.get(from) || [];
+        queue.push(candidate);
+        pendingScreenIceCandidatesRef.current.set(from, queue);
       }
     } catch (err) {
       console.warn('Error handling screen ICE candidate:', err);
@@ -528,6 +555,7 @@ export const MediaProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       }
 
       setLocalScreenStream(screen);
+      localScreenStreamRef.current = screen;
       setIsScreenSharing(true);
 
       // Notify server so activeScreens in room is updated
@@ -558,6 +586,7 @@ export const MediaProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const stopScreenShare = useCallback(() => {
     if (localScreenStreamRef.current) {
       localScreenStreamRef.current.getTracks().forEach((t) => t.stop());
+      localScreenStreamRef.current = null;
       setLocalScreenStream(null);
     }
     setIsScreenSharing(false);
@@ -640,6 +669,16 @@ export const MediaProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         try {
           const pc = getOrCreatePeerConnection(from, false);
           await pc.setRemoteDescription(new RTCSessionDescription(offer));
+
+          // Flush any pending media ICE candidates
+          const queued = pendingIceCandidatesRef.current.get(from) || [];
+          for (const cand of queued) {
+            try {
+              await pc.addIceCandidate(new RTCIceCandidate(cand));
+            } catch {}
+          }
+          pendingIceCandidatesRef.current.delete(from);
+
           const answer = await pc.createAnswer();
           await pc.setLocalDescription(answer);
 
@@ -659,6 +698,15 @@ export const MediaProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           const pc = peerConnectionsRef.current.get(from);
           if (pc) {
             await pc.setRemoteDescription(new RTCSessionDescription(answer));
+
+            // Flush any pending media ICE candidates
+            const queued = pendingIceCandidatesRef.current.get(from) || [];
+            for (const cand of queued) {
+              try {
+                await pc.addIceCandidate(new RTCIceCandidate(cand));
+              } catch {}
+            }
+            pendingIceCandidatesRef.current.delete(from);
           }
         } catch (err) {
           console.warn('WebRTC media answer handling error:', err);
@@ -673,8 +721,12 @@ export const MediaProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       } else {
         try {
           const pc = peerConnectionsRef.current.get(from);
-          if (pc && candidate) {
+          if (pc && pc.remoteDescription) {
             await pc.addIceCandidate(new RTCIceCandidate(candidate));
+          } else {
+            const queue = pendingIceCandidatesRef.current.get(from) || [];
+            queue.push(candidate);
+            pendingIceCandidatesRef.current.set(from, queue);
           }
         } catch (err) {
           console.warn('WebRTC media candidate handling error:', err);

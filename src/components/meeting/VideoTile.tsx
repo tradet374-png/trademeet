@@ -30,12 +30,29 @@ export const VideoTile: React.FC<VideoTileProps> = ({
   isSpotlight,
   onPin,
 }) => {
+  const videoRef = useRef<HTMLVideoElement | null>(null);
   const { currentParticipant, isHost, muteParticipant, kickParticipant } = useSocket();
   const { isAudioMuted: localAudioMuted, isVideoOff: localVideoOff, currentAudioLevel } = useMedia();
 
   const isSpeaking = isLocal ? currentAudioLevel > 15 && !localAudioMuted : participant.isSpeaking;
   const isMuted = isLocal ? localAudioMuted : participant.isAudioMuted;
-  const isVideoOff = isLocal ? localVideoOff : (participant.isVideoOff || !stream);
+
+  const hasVideoTrack = Boolean(
+    stream && stream.getVideoTracks().length > 0
+  );
+
+  const isVideoOff = isLocal
+    ? localVideoOff
+    : (participant.isVideoOff || !hasVideoTrack);
+
+  useEffect(() => {
+    if (videoRef.current && stream) {
+      if (videoRef.current.srcObject !== stream) {
+        videoRef.current.srcObject = stream;
+      }
+      videoRef.current.play().catch(() => {});
+    }
+  }, [stream, isVideoOff]);
 
   const canModerate =
     !isLocal &&
@@ -53,12 +70,7 @@ export const VideoTile: React.FC<VideoTileProps> = ({
       {/* Video element: always present in DOM when stream exists so remote audio plays even when video is off */}
       {stream && (
         <video
-          ref={(el) => {
-            if (el && el.srcObject !== stream) {
-              el.srcObject = stream;
-              el.play().catch(() => {});
-            }
-          }}
+          ref={videoRef}
           autoPlay
           playsInline
           muted={isLocal} // Always mute local video element to avoid self-echo

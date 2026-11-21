@@ -58,7 +58,16 @@ export const ScreenShareTile: React.FC<ScreenShareTileProps> = ({
       {/* Video display */}
       {stream ? (
         <video
-          ref={videoRef}
+          ref={(el) => {
+            if (el && el.srcObject !== stream) {
+              el.srcObject = stream;
+              el.play().catch(() => {
+                // Autoplay policy fallback on mobile devices
+                el.muted = true;
+                el.play().catch(() => {});
+              });
+            }
+          }}
           autoPlay
           playsInline
           muted={isLocal}
