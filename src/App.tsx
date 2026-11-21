@@ -37,9 +37,11 @@ export const App: React.FC = () => {
   const [showHostControls, setShowHostControls] = useState(false);
 
   // Handle joining a room from the Home Page
-  const handleJoin = (serverNumber: string, name: string) => {
-    // Softly request media permissions in background without blocking room entry
-    requestMediaPermissions().catch(() => {});
+  const handleJoin = async (serverNumber: string, name: string) => {
+    // Request media permissions before joining room so audio/video tracks are ready for WebRTC negotiation
+    try {
+      await requestMediaPermissions();
+    } catch {}
     joinRoom(serverNumber, name);
   };
 
