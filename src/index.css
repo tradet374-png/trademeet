@@ -1,0 +1,89 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    box-sizing: border-box;
+  }
+  
+  body {
+    margin: 0;
+    padding: 0;
+    background-color: #0B0F19;
+    color: #FFFFFF;
+    font-family: 'Inter', system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    overflow-x: hidden;
+  }
+
+  /* Custom dark scrollbar */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: #0B0F19;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #232D42;
+    border-radius: 4px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: #00C896;
+  }
+}
+
+/* Glassmorphism and Terminal Accents */
+.glass-panel {
+  background: rgba(21, 27, 43, 0.75);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(35, 45, 66, 0.6);
+}
+
+.glass-panel-glow {
+  background: rgba(21, 27, 43, 0.85);
+  backdrop-filter: blur(14px);
+  border: 1px solid rgba(0, 200, 150, 0.25);
+  box-shadow: 0 8px 32px 0 rgba(0, 200, 150, 0.08);
+}
+
+.terminal-grid {
+  background-size: 32px 32px;
+  background-image: 
+    linear-gradient(to right, rgba(35, 45, 66, 0.2) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(35, 45, 66, 0.2) 1px, transparent 1px);
+}
+
+/* Glow effects */
+.glow-accent {
+  box-shadow: 0 0 20px rgba(0, 200, 150, 0.35);
+}
+
+.glow-active-speaker {
+  box-shadow: 0 0 0 2px #00C896, 0 0 16px rgba(0, 200, 150, 0.5);
+}
+
+.glow-danger {
+  box-shadow: 0 0 20px rgba(255, 75, 85, 0.35);
+}
+
+/* Flash animations for price changes */
+@keyframes price-flash-green {
+  0% { background-color: rgba(0, 200, 150, 0.4); }
+  100% { background-color: transparent; }
+}
+
+@keyframes price-flash-red {
+  0% { background-color: rgba(255, 75, 85, 0.4); }
+  100% { background-color: transparent; }
+}
+
+.flash-green {
+  animation: price-flash-green 0.7s ease-out;
+}
+
+.flash-red {
+  animation: price-flash-red 0.7s ease-out;
+}
