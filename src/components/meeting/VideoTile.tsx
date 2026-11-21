@@ -80,6 +80,20 @@ export const VideoTile: React.FC<VideoTileProps> = ({
         />
       )}
 
+      {/* Dedicated audio element for remote participants: NEVER affected by video visibility or display:none */}
+      {!isLocal && stream && (
+        <audio
+          ref={(el) => {
+            if (el && el.srcObject !== stream) {
+              el.srcObject = stream;
+              el.play().catch(() => {});
+            }
+          }}
+          autoPlay
+          playsInline
+        />
+      )}
+
       {/* Avatar Placeholder when video is OFF */}
       {isVideoOff && (
         <div className="flex flex-col items-center justify-center p-4">

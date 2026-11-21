@@ -209,11 +209,28 @@ export const MediaProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     pc = new RTCPeerConnection(RTC_CONFIG);
     peerConnectionsRef.current.set(targetId, pc);
 
-    // Add local camera/mic tracks to this connection
+    // Ensure audio & video senders or transceivers exist
+    const senders = pc.getSenders();
+    const hasAudioSender = senders.some((s) => s.track?.kind === 'audio');
+    const hasVideoSender = senders.some((s) => s.track?.kind === 'video');
+
     if (localStream) {
       localStream.getTracks().forEach((track) => {
-        pc!.addTrack(track, localStream);
+        const existingSender = senders.find((s) => s.track?.kind === track.kind);
+        if (!existingSender) {
+          pc.addTrack(track, localStream!);
+        } else {
+          existingSender.replaceTrack(track).catch(() => {});
+        }
       });
+    }
+
+    // Pre-allocate transceivers if tracks are not attached yet so SDP has audio & video slots ready
+    if (!hasAudioSender && !pc.getSenders().some((s) => s.track?.kind === 'audio')) {
+      try { pc.addTransceiver('audio', { direction: 'sendrecv' }); } catch {}
+    }
+    if (!hasVideoSender && !pc.getSenders().some((s) => s.track?.kind === 'video')) {
+      try { pc.addTransceiver('video', { direction: 'sendrecv' }); } catch {}
     }
 
     // Handle remote camera/mic media track arrival
@@ -428,12 +445,21 @@ export const MediaProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         audioTrack.enabled = !nextMuted;
         setIsAudioMuted(nextMuted);
 
-        // Add to peer connections if not present
-        peerConnectionsRef.current.forEach((pc) => {
+        // Update all peer connections with active audio track
+        peerConnectionsRef.current.forEach(async (pc, targetId) => {
           const senders = pc.getSenders();
-          const hasSender = senders.some((s) => s.track?.kind === 'audio');
-          if (!hasSender && audioTrack) {
+          const audioSender = senders.find((s) => s.track?.kind === 'audio');
+          if (audioSender) {
+            await audioSender.replaceTrack(audioTrack);
+          } else {
             pc.addTrack(audioTrack, stream!);
+            if (pc.signalingState === 'stable') {
+              try {
+                const offer = await pc.createOffer();
+                await pc.setLocalDescription(offer);
+                socket?.emit('webrtc:offer', { to: targetId, offer, type: 'media' });
+              } catch {}
+            }
           }
         });
 
@@ -448,6 +474,39 @@ export const MediaProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       console.error('Error toggling audio:', err);
     }
   }, [localStream, isAudioMuted, selectedAudioDeviceId, setupAudioAnalyser, socket, isConnected]);
+
+  // Synchronize localStream tracks to all active peer connections whenever localStream updates
+  useEffect(() => {
+    if (!localStream) return;
+    const tracks = localStream.getTracks();
+
+    peerConnectionsRef.current.forEach(async (pc, targetId) => {
+      let needsRenegotiation = false;
+      const senders = pc.getSenders();
+
+      for (const track of tracks) {
+        const sender = senders.find((s) => s.track?.kind === track.kind);
+        if (sender) {
+          sender.replaceTrack(track).catch(() => {});
+        } else {
+          pc.addTrack(track, localStream);
+          needsRenegotiation = true;
+        }
+      }
+
+      if (needsRenegotiation && pc.signalingState === 'stable') {
+        try {
+          const offer = await pc.createOffer();
+          await pc.setLocalDescription(offer);
+          if (socket && isConnected) {
+            socket.emit('webrtc:offer', { to: targetId, offer, type: 'media' });
+          }
+        } catch (err) {
+          console.warn('Media track renegotiation error:', err);
+        }
+      }
+    });
+  }, [localStream, socket, isConnected]);
 
   // Toggle Video Camera
   const toggleVideo = useCallback(async () => {
