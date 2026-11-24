@@ -4,12 +4,32 @@ import { useSocket } from './SocketContext';
 
 const RTC_CONFIG: RTCConfiguration = {
   iceServers: [
+    // Google Public STUN
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
     { urls: 'stun:stun2.l.google.com:19302' },
     { urls: 'stun:stun3.l.google.com:19302' },
     { urls: 'stun:stun4.l.google.com:19302' },
+    // OpenRelay Public STUN & TURN Relay Servers (by Metered.ca)
+    // Traverses Carrier-Grade NAT (CGNAT), 4G/5G mobile carriers, and strict firewalls
+    { urls: 'stun:openrelay.metered.ca:80' },
+    {
+      urls: 'turn:openrelay.metered.ca:80',
+      username: 'openrelayproject',
+      credential: 'openrelayproject',
+    },
+    {
+      urls: 'turn:openrelay.metered.ca:443',
+      username: 'openrelayproject',
+      credential: 'openrelayproject',
+    },
+    {
+      urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+      username: 'openrelayproject',
+      credential: 'openrelayproject',
+    },
   ],
+  iceCandidatePoolSize: 10,
 };
 
 // Full HD 1080p Video Constraints
@@ -263,6 +283,17 @@ export const MediaProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       }
     };
 
+    // Auto-recover if peer is on restrictive network / NAT
+    pc.oniceconnectionstatechange = () => {
+      console.log(`📡 Peer [${targetId}] ICE connection state:`, pc.iceConnectionState);
+      if (pc.iceConnectionState === 'failed') {
+        console.warn(`⚠️ ICE Failed for peer ${targetId}. Attempting ICE restart...`);
+        try {
+          pc.restartIce();
+        } catch {}
+      }
+    };
+
     // If initiator, create and send WebRTC offer for media
     if (isInitiator) {
       pc.createOffer({ offerToReceiveAudio: true, offerToReceiveVideo: true })
@@ -307,6 +338,12 @@ export const MediaProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         }
       };
 
+      screenPc.oniceconnectionstatechange = () => {
+        if (screenPc.iceConnectionState === 'failed') {
+          try { screenPc.restartIce(); } catch {}
+        }
+      };
+
       const offer = await screenPc.createOffer();
       await screenPc.setLocalDescription(offer);
 
@@ -345,6 +382,12 @@ export const MediaProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             candidate: event.candidate,
             type: 'screen',
           });
+        }
+      };
+
+      screenPc.oniceconnectionstatechange = () => {
+        if (screenPc.iceConnectionState === 'failed') {
+          try { screenPc.restartIce(); } catch {}
         }
       };
 
