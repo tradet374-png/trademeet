@@ -31,6 +31,7 @@ export const VideoTile: React.FC<VideoTileProps> = ({
   onPin,
 }) => {
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
   const { currentParticipant, isHost, muteParticipant, kickParticipant } = useSocket();
   const { isAudioMuted: localAudioMuted, isVideoOff: localVideoOff, currentAudioLevel } = useMedia();
 
@@ -52,7 +53,13 @@ export const VideoTile: React.FC<VideoTileProps> = ({
       }
       videoRef.current.play().catch(() => {});
     }
-  }, [stream, isVideoOff]);
+    if (audioRef.current && stream && !isLocal) {
+      if (audioRef.current.srcObject !== stream) {
+        audioRef.current.srcObject = stream;
+      }
+      audioRef.current.play().catch(() => {});
+    }
+  }, [stream, isVideoOff, isLocal]);
 
   const canModerate =
     !isLocal &&
@@ -83,12 +90,7 @@ export const VideoTile: React.FC<VideoTileProps> = ({
       {/* Dedicated audio element for remote participants: NEVER affected by video visibility or display:none */}
       {!isLocal && stream && (
         <audio
-          ref={(el) => {
-            if (el && el.srcObject !== stream) {
-              el.srcObject = stream;
-              el.play().catch(() => {});
-            }
-          }}
+          ref={audioRef}
           autoPlay
           playsInline
         />

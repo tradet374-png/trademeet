@@ -169,11 +169,12 @@ export const SocketProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       socketRef.current.emit('room:join', { serverNumber: serverNum, name: traderName });
     }
 
-    // 2. Instant resilience: If socket doesn't return room:joined within 500ms (e.g. offline/Surge demo),
-    // enter the room directly so the user is never stuck on the home page!
+    // 2. Resilience: If socket is slow (e.g. mobile 4G/5G or server cold start), give it 6 seconds
+    // to complete WebSocket handshake before falling back to local demo room
     const timer = setTimeout(() => {
       setCurrentRoom((existing) => {
         if (existing) return existing; // Already joined from server response!
+        console.warn('⚠️ Server connection timed out after 6s. Falling back to local room.');
 
         const selfParticipant: Participant = {
           id: socketRef.current?.id || `trader-${Date.now().toString(36)}`,
@@ -220,7 +221,7 @@ export const SocketProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         showToast(`Joined Server #${serverNum} as ${traderName}`);
         return localRoom;
       });
-    }, 500);
+    }, 6000);
 
     return () => clearTimeout(timer);
   }, [showToast]);

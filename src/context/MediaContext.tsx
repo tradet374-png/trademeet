@@ -2,41 +2,33 @@
 import React, { createContext, useContext, useEffect, useState, useRef, useCallback } from 'react';
 import { useSocket } from './SocketContext';
 
-const RTC_CONFIG: RTCConfiguration = {
-  iceServers: [
-    // Google Public STUN
-    { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'stun:stun1.l.google.com:19302' },
-    { urls: 'stun:stun2.l.google.com:19302' },
-    { urls: 'stun:stun3.l.google.com:19302' },
-    { urls: 'stun:stun4.l.google.com:19302' },
-    // OpenRelay Public STUN & TURN Relay Servers (by Metered.ca)
-    // Traverses Carrier-Grade NAT (CGNAT), 4G/5G mobile carriers, and strict firewalls
-    { urls: 'stun:openrelay.metered.ca:80' },
-    {
-      urls: 'turn:openrelay.metered.ca:80',
-      username: 'openrelayproject',
-      credential: 'openrelayproject',
-    },
-    {
-      urls: 'turn:openrelay.metered.ca:443',
-      username: 'openrelayproject',
-      credential: 'openrelayproject',
-    },
-    {
-      urls: 'turn:openrelay.metered.ca:443?transport=tcp',
-      username: 'openrelayproject',
-      credential: 'openrelayproject',
-    },
-  ],
+// High-reliability multi-network STUN & TURN servers
+// Uses Google, Cloudflare, Nextcloud (port 443), and dynamic backend TURN credentials
+const DEFAULT_ICE_SERVERS: RTCIceServer[] = [
+  // Google Global STUN
+  { urls: 'stun:stun.l.google.com:19302' },
+  { urls: 'stun:stun1.l.google.com:19302' },
+  { urls: 'stun:stun2.l.google.com:19302' },
+  { urls: 'stun:stun3.l.google.com:19302' },
+  { urls: 'stun:stun4.l.google.com:19302' },
+  // Cloudflare Global Anycast STUN
+  { urls: 'stun:stun.cloudflare.com:3478' },
+  // Nextcloud STUN on port 443 (bypasses enterprise & hotel firewalls blocking port 19302/3478)
+  { urls: 'stun:stun.nextcloud.com:443' },
+];
+
+const INITIAL_RTC_CONFIG: RTCConfiguration = {
+  iceServers: DEFAULT_ICE_SERVERS,
   iceCandidatePoolSize: 10,
 };
 
-// Full HD 1080p Video Constraints
-const HD_1080P_VIDEO_CONSTRAINTS: MediaTrackConstraints = {
-  width: { ideal: 1920, min: 1280 },
-  height: { ideal: 1080, min: 720 },
+// Adaptive Video Constraints: Compatible with iPhones, Android phones, tablets, and 1080p webcams
+// Omits strict "min" constraints to prevent OverconstrainedError on smartphones and portrait orientations
+const ADAPTIVE_VIDEO_CONSTRAINTS: MediaTrackConstraints = {
+  width: { ideal: 1280, max: 1920 },
+  height: { ideal: 720, max: 1080 },
   frameRate: { ideal: 30, max: 60 },
+  facingMode: 'user',
 };
 
 // Boost video sender bitrate to 4 Mbps for crystal-clear 1080p transmission
@@ -108,6 +100,32 @@ export const MediaProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const [selectedAudioDeviceId, setSelectedAudioDeviceId] = useState('');
   const [selectedVideoDeviceId, setSelectedVideoDeviceId] = useState('');
   const [isLiveKitActive] = useState(false);
+
+  // Dynamic ICE configuration (STUN + TURN)
+  const rtcConfigRef = useRef<RTCConfiguration>(INITIAL_RTC_CONFIG);
+
+  useEffect(() => {
+    // Dynamically retrieve active STUN & TURN servers from backend
+    const loadIceServers = async () => {
+      try {
+        const backendUrl = import.meta.env.VITE_BACKEND_URL || '';
+        const res = await fetch(`${backendUrl}/api/ice-servers`);
+        if (res.ok) {
+          const data = await res.json();
+          if (data.iceServers && Array.isArray(data.iceServers) && data.iceServers.length > 0) {
+            rtcConfigRef.current = {
+              iceServers: data.iceServers,
+              iceCandidatePoolSize: 10,
+            };
+            console.log('📡 WebRTC ICE Servers updated from backend:', data.source);
+          }
+        }
+      } catch (err) {
+        console.log('📡 Using default high-reliability STUN servers');
+      }
+    };
+    loadIceServers();
+  }, []);
 
   const audioContextRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
@@ -214,13 +232,17 @@ export const MediaProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     }
   }, [socket, isConnected, isAudioMuted]);
 
-  // Request initial media permissions (non-blocking)
+  // Request initial media permissions (non-blocking, mobile-adaptive)
   const requestMediaPermissions = useCallback(async (): Promise<boolean> => {
     try {
       if (!navigator.mediaDevices?.getUserMedia) return false;
       const stream = await navigator.mediaDevices.getUserMedia({
-        audio: true,
-        video: HD_1080P_VIDEO_CONSTRAINTS,
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+        video: ADAPTIVE_VIDEO_CONSTRAINTS,
       });
 
       // Join muted with camera off by default
@@ -235,7 +257,13 @@ export const MediaProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     } catch {
       // Fallback: try audio only if camera is unavailable or denied
       try {
-        const audioOnly = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const audioOnly = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          },
+        });
         audioOnly.getAudioTracks().forEach((t) => (t.enabled = false));
         localStreamRef.current = audioOnly;
         setLocalStream(audioOnly);
@@ -254,21 +282,37 @@ export const MediaProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       return pc;
     }
 
-    pc = new RTCPeerConnection(RTC_CONFIG);
+    pc = new RTCPeerConnection(rtcConfigRef.current);
     peerConnectionsRef.current.set(targetId, pc);
 
-    // Attach local camera & microphone tracks
+    // Pre-allocate audio & video transceivers with 'sendrecv' so SDP always establishes audio & video m-lines!
+    // This allows replaceTrack to work instantly on mic/camera toggle with ZERO renegotiation, avoiding WebRTC glare.
     const currentStream = localStreamRef.current || localStream;
-    if (currentStream) {
-      currentStream.getTracks().forEach((track) => {
-        pc!.addTrack(track, currentStream);
-      });
+    const audioTrack = currentStream?.getAudioTracks()[0];
+    const videoTrack = currentStream?.getVideoTracks()[0];
+
+    if (audioTrack) {
+      pc.addTrack(audioTrack, currentStream!);
+    } else {
+      pc.addTransceiver('audio', { direction: 'sendrecv' });
     }
 
-    // Handle remote camera/mic media track arrival
+    if (videoTrack) {
+      pc.addTrack(videoTrack, currentStream!);
+    } else {
+      pc.addTransceiver('video', { direction: 'sendrecv' });
+    }
+
+    // Handle remote camera/mic media track arrival (reliably appends both audio & video tracks without overwriting)
     pc.ontrack = (event) => {
-      const incomingStream = event.streams[0] || new MediaStream([event.track]);
-      remoteStreamsRef.current.set(targetId, incomingStream);
+      let stream = remoteStreamsRef.current.get(targetId);
+      if (!stream) {
+        stream = event.streams[0] || new MediaStream();
+        remoteStreamsRef.current.set(targetId, stream);
+      }
+      if (!stream.getTracks().some((t) => t.id === event.track.id)) {
+        stream.addTrack(event.track);
+      }
       setRemoteStreams(new Map(remoteStreamsRef.current));
     };
 
@@ -321,7 +365,7 @@ export const MediaProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         oldPc.close();
       }
 
-      const screenPc = new RTCPeerConnection(RTC_CONFIG);
+      const screenPc = new RTCPeerConnection(rtcConfigRef.current);
       screenPeerConnectionsRef.current.set(targetId, screenPc);
 
       screenStream.getTracks().forEach((track) => {
@@ -366,7 +410,7 @@ export const MediaProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         oldPc.close();
       }
 
-      const screenPc = new RTCPeerConnection(RTC_CONFIG);
+      const screenPc = new RTCPeerConnection(rtcConfigRef.current);
       screenPeerConnectionsRef.current.set(from, screenPc);
 
       screenPc.ontrack = (event) => {
@@ -502,21 +546,14 @@ export const MediaProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         audioTrack.enabled = !nextMuted;
         setIsAudioMuted(nextMuted);
 
-        // Update all peer connections with active audio track
-        peerConnectionsRef.current.forEach(async (pc, targetId) => {
+        // Update all peer connections with active audio track (zero renegotiation)
+        peerConnectionsRef.current.forEach(async (pc) => {
           const senders = pc.getSenders();
-          const audioSender = senders.find((s) => s.track?.kind === 'audio');
+          const audioSender = senders.find((s) => s.track?.kind === 'audio' || (s as any).kind === 'audio');
           if (audioSender) {
-            await audioSender.replaceTrack(audioTrack);
+            await audioSender.replaceTrack(nextMuted ? null : audioTrack).catch(() => {});
           } else {
             pc.addTrack(audioTrack, stream!);
-            if (pc.signalingState === 'stable') {
-              try {
-                const offer = await pc.createOffer();
-                await pc.setLocalDescription(offer);
-                socket?.emit('webrtc:offer', { to: targetId, offer, type: 'media' });
-              } catch {}
-            }
           }
         });
 
@@ -539,10 +576,10 @@ export const MediaProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       const nextVideoOff = !isVideoOff;
 
       if (!nextVideoOff) {
-        // Turning video ON: Get camera video track
+        // Turning video ON: Get camera video track with adaptive resolution
         const videoStream = await navigator.mediaDevices.getUserMedia({
           video: {
-            ...HD_1080P_VIDEO_CONSTRAINTS,
+            ...ADAPTIVE_VIDEO_CONSTRAINTS,
             ...(selectedVideoDeviceId ? { deviceId: { exact: selectedVideoDeviceId } } : {}),
           },
           audio: false,
@@ -566,24 +603,16 @@ export const MediaProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
         setIsVideoOff(false);
 
-        // Update all media peer connections with new video track
+        // Update all media peer connections with new video track (replaceTrack is instant, zero renegotiation)
         peerConnectionsRef.current.forEach(async (pc) => {
           const senders = pc.getSenders();
-          const videoSender = senders.find((s) => s.track?.kind === 'video');
+          const videoSender = senders.find((s) => s.track?.kind === 'video' || (s as any).kind === 'video');
           if (videoSender) {
             await videoSender.replaceTrack(newVideoTrack).catch(() => {});
             await optimizeVideoQuality(pc);
           } else {
             pc.addTrack(newVideoTrack, stream!);
             await optimizeVideoQuality(pc);
-            try {
-              const offer = await pc.createOffer();
-              await pc.setLocalDescription(offer);
-              const targetId = Array.from(peerConnectionsRef.current.entries()).find(([_, p]) => p === pc)?.[0];
-              if (targetId && socket && isConnected) {
-                socket.emit('webrtc:offer', { to: targetId, offer, type: 'media' });
-              }
-            } catch {}
           }
         });
 
@@ -732,7 +761,7 @@ export const MediaProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       try {
         const newStream = await navigator.mediaDevices.getUserMedia({
           video: {
-            ...HD_1080P_VIDEO_CONSTRAINTS,
+            ...ADAPTIVE_VIDEO_CONSTRAINTS,
             deviceId: { exact: deviceId },
           },
         });

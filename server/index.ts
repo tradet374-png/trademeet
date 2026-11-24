@@ -52,6 +52,39 @@ app.get('/api/health', (req: Request, res: Response) => {
   });
 });
 
+// Active STUN & TURN Servers for cross-device & cross-network NAT traversal
+app.get('/api/ice-servers', async (req: Request, res: Response) => {
+  const meteredApiKey = process.env.METERED_API_KEY;
+  const meteredAppName = process.env.METERED_APP_NAME;
+
+  if (meteredApiKey && meteredAppName) {
+    try {
+      const response = await fetch(
+        `https://${meteredAppName}.metered.live/api/v1/turn/credentials?apiKey=${meteredApiKey}`
+      );
+      if (response.ok) {
+        const iceServers = await response.json();
+        return res.json({ success: true, iceServers, source: 'metered-cloud' });
+      }
+    } catch (err: any) {
+      console.warn('Metered TURN fetch error:', err.message);
+    }
+  }
+
+  // Verified high-performance STUN Servers (Google Global, Cloudflare Anycast, Nextcloud port 443)
+  const iceServers = [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:stun2.l.google.com:19302' },
+    { urls: 'stun:stun3.l.google.com:19302' },
+    { urls: 'stun:stun4.l.google.com:19302' },
+    { urls: 'stun:stun.cloudflare.com:3478' },
+    { urls: 'stun:stun.nextcloud.com:443' },
+  ];
+
+  res.json({ success: true, iceServers, source: 'default-global-stun' });
+});
+
 // List all active rooms
 app.get('/api/rooms', (req: Request, res: Response) => {
   const rooms = roomManager.getAllActiveRooms();
