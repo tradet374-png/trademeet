@@ -74,15 +74,15 @@ export const VideoTile: React.FC<VideoTileProps> = ({
           : 'border-[#232D42] hover:border-[#384564]'
       }`}
     >
-      {/* Video element: always present in DOM when stream exists so remote audio plays even when video is off */}
+      {/* Video element: always kept active in DOM with opacity transition so mobile video decoders NEVER pause or freeze */}
       {stream && (
         <video
           ref={videoRef}
           autoPlay
           playsInline
           muted={isLocal} // Always mute local video element to avoid self-echo
-          className={`w-full h-full object-cover ${isLocal ? 'scale-x-[-1]' : ''} ${
-            isVideoOff ? 'hidden' : 'block'
+          className={`w-full h-full object-cover transition-opacity duration-150 ${isLocal ? 'scale-x-[-1]' : ''} ${
+            isVideoOff ? 'opacity-0 absolute inset-0 pointer-events-none' : 'opacity-100 relative'
           }`}
         />
       )}

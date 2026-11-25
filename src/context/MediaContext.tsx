@@ -327,14 +327,21 @@ export const MediaProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       }
     };
 
-    // Auto-recover if peer is on restrictive network / NAT
-    pc.oniceconnectionstatechange = () => {
+    // Auto-recover if peer is on restrictive network / NAT with active ICE restart
+    pc.oniceconnectionstatechange = async () => {
       console.log(`📡 Peer [${targetId}] ICE connection state:`, pc.iceConnectionState);
       if (pc.iceConnectionState === 'failed') {
-        console.warn(`⚠️ ICE Failed for peer ${targetId}. Attempting ICE restart...`);
+        console.warn(`⚠️ ICE Failed for peer ${targetId}. Initiating active ICE restart offer...`);
         try {
           pc.restartIce();
-        } catch {}
+          const offer = await pc.createOffer({ iceRestart: true });
+          await pc.setLocalDescription(offer);
+          if (socket && isConnected) {
+            socket.emit('webrtc:offer', { to: targetId, offer, type: 'media' });
+          }
+        } catch (err) {
+          console.warn('ICE restart offer note:', err);
+        }
       }
     };
 
@@ -522,40 +529,43 @@ export const MediaProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const toggleAudio = useCallback(async () => {
     try {
       let stream = localStreamRef.current || localStream;
-      if (!stream) {
-        stream = await navigator.mediaDevices.getUserMedia({
-          audio: selectedAudioDeviceId ? { deviceId: { exact: selectedAudioDeviceId } } : true,
-          video: false,
-        });
-        localStreamRef.current = stream;
-        setLocalStream(stream);
-        setupAudioAnalyser(stream);
-      }
-
-      let audioTrack = stream.getAudioTracks()[0];
+      let audioTrack = stream?.getAudioTracks()[0];
       const nextMuted = !isAudioMuted;
 
       if (!audioTrack && !nextMuted) {
-        const newAudio = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const newAudio = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          },
+        });
         audioTrack = newAudio.getAudioTracks()[0];
-        stream.addTrack(audioTrack);
-        localStreamRef.current = stream;
+        if (!stream) {
+          stream = new MediaStream([audioTrack]);
+          localStreamRef.current = stream;
+          setLocalStream(stream);
+        } else {
+          stream.addTrack(audioTrack);
+        }
+        setupAudioAnalyser(stream);
+
+        // Pre-allocate / attach to audio transceiver
+        peerConnectionsRef.current.forEach(async (pc) => {
+          const audioTransceiver = pc.getTransceivers().find(
+            (t) => t.sender.track?.kind === 'audio' || t.receiver.track.kind === 'audio'
+          );
+          if (audioTransceiver) {
+            await audioTransceiver.sender.replaceTrack(audioTrack!).catch(() => {});
+          } else {
+            pc.addTrack(audioTrack!, stream!);
+          }
+        });
       }
 
       if (audioTrack) {
         audioTrack.enabled = !nextMuted;
         setIsAudioMuted(nextMuted);
-
-        // Update all peer connections with active audio track (zero renegotiation)
-        peerConnectionsRef.current.forEach(async (pc) => {
-          const senders = pc.getSenders();
-          const audioSender = senders.find((s) => s.track?.kind === 'audio' || (s as any).kind === 'audio');
-          if (audioSender) {
-            await audioSender.replaceTrack(nextMuted ? null : audioTrack).catch(() => {});
-          } else {
-            pc.addTrack(audioTrack, stream!);
-          }
-        });
 
         if (socket && isConnected) {
           socket.emit('media:state-update', {
@@ -576,68 +586,62 @@ export const MediaProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       const nextVideoOff = !isVideoOff;
 
       if (!nextVideoOff) {
-        // Turning video ON: Get camera video track with adaptive resolution
-        const videoStream = await navigator.mediaDevices.getUserMedia({
-          video: {
-            ...ADAPTIVE_VIDEO_CONSTRAINTS,
-            ...(selectedVideoDeviceId ? { deviceId: { exact: selectedVideoDeviceId } } : {}),
-          },
-          audio: false,
-        });
-        const newVideoTrack = videoStream.getVideoTracks()[0];
+        // Turning video ON
+        let videoTrack = stream?.getVideoTracks()[0];
 
-        if (!stream) {
-          stream = new MediaStream([newVideoTrack]);
-          localStreamRef.current = stream;
-          setLocalStream(stream);
-        } else {
-          const oldTrack = stream.getVideoTracks()[0];
-          if (oldTrack) {
-            stream.removeTrack(oldTrack);
-            oldTrack.stop();
+        if (!videoTrack) {
+          // If no video track existed yet, acquire one with mobile-adaptive constraints
+          const videoStream = await navigator.mediaDevices.getUserMedia({
+            video: {
+              ...ADAPTIVE_VIDEO_CONSTRAINTS,
+              ...(selectedVideoDeviceId ? { deviceId: { exact: selectedVideoDeviceId } } : {}),
+            },
+            audio: false,
+          });
+          videoTrack = videoStream.getVideoTracks()[0];
+
+          if (!stream) {
+            stream = new MediaStream([videoTrack]);
+            localStreamRef.current = stream;
+            setLocalStream(stream);
+          } else {
+            stream.addTrack(videoTrack);
+            localStreamRef.current = stream;
+            setLocalStream(new MediaStream(stream.getTracks()));
           }
-          stream.addTrack(newVideoTrack);
-          localStreamRef.current = stream;
-          setLocalStream(new MediaStream(stream.getTracks()));
+
+          // Attach track to pre-allocated video transceiver on all active connections
+          peerConnectionsRef.current.forEach(async (pc) => {
+            const videoTransceiver = pc.getTransceivers().find(
+              (t) => t.sender.track?.kind === 'video' || t.receiver.track.kind === 'video'
+            );
+            if (videoTransceiver) {
+              await videoTransceiver.sender.replaceTrack(videoTrack!).catch(() => {});
+              await optimizeVideoQuality(pc);
+            } else {
+              pc.addTrack(videoTrack!, stream!);
+              await optimizeVideoQuality(pc);
+            }
+          });
+        } else {
+          // Fast path: track is already attached, simply un-mute it! 0ms latency, zero pause/freeze!
+          videoTrack.enabled = true;
         }
 
         setIsVideoOff(false);
-
-        // Update all media peer connections with new video track (replaceTrack is instant, zero renegotiation)
-        peerConnectionsRef.current.forEach(async (pc) => {
-          const senders = pc.getSenders();
-          const videoSender = senders.find((s) => s.track?.kind === 'video' || (s as any).kind === 'video');
-          if (videoSender) {
-            await videoSender.replaceTrack(newVideoTrack).catch(() => {});
-            await optimizeVideoQuality(pc);
-          } else {
-            pc.addTrack(newVideoTrack, stream!);
-            await optimizeVideoQuality(pc);
-          }
-        });
-
         if (socket && isConnected) {
           socket.emit('media:state-update', { isVideoOff: false });
         }
       } else {
-        // Turning video OFF
+        // Turning video OFF: simply set track.enabled = false!
+        // DO NOT destroy or remove the track. This keeps the WebRTC pipeline & remote video decoders active so it never freezes!
         if (stream) {
-          stream.getVideoTracks().forEach((track) => {
-            track.enabled = false;
-            track.stop();
-            stream!.removeTrack(track);
-          });
-          localStreamRef.current = stream;
-          setLocalStream(new MediaStream(stream.getTracks()));
+          const videoTrack = stream.getVideoTracks()[0];
+          if (videoTrack) {
+            videoTrack.enabled = false;
+          }
         }
         setIsVideoOff(true);
-
-        peerConnectionsRef.current.forEach((pc) => {
-          const videoSender = pc.getSenders().find((s) => s.track?.kind === 'video');
-          if (videoSender) {
-            videoSender.replaceTrack(null).catch(() => {});
-          }
-        });
 
         if (socket && isConnected) {
           socket.emit('media:state-update', { isVideoOff: true });
@@ -820,7 +824,9 @@ export const MediaProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           const queued = pendingIceCandidatesRef.current.get(from) || [];
           for (const cand of queued) {
             try {
-              await pc.addIceCandidate(new RTCIceCandidate(cand));
+              if (cand && cand.candidate) {
+                await pc.addIceCandidate(new RTCIceCandidate(cand));
+              }
             } catch {}
           }
           pendingIceCandidatesRef.current.delete(from);
@@ -849,7 +855,9 @@ export const MediaProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             const queued = pendingIceCandidatesRef.current.get(from) || [];
             for (const cand of queued) {
               try {
-                await pc.addIceCandidate(new RTCIceCandidate(cand));
+                if (cand && cand.candidate) {
+                  await pc.addIceCandidate(new RTCIceCandidate(cand));
+                }
               } catch {}
             }
             pendingIceCandidatesRef.current.delete(from);
@@ -867,9 +875,9 @@ export const MediaProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       } else {
         try {
           const pc = peerConnectionsRef.current.get(from);
-          if (pc && pc.remoteDescription) {
+          if (pc && pc.remoteDescription && candidate && candidate.candidate) {
             await pc.addIceCandidate(new RTCIceCandidate(candidate));
-          } else {
+          } else if (candidate && candidate.candidate) {
             const queue = pendingIceCandidatesRef.current.get(from) || [];
             queue.push(candidate);
             pendingIceCandidatesRef.current.set(from, queue);
