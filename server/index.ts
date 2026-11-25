@@ -54,17 +54,29 @@ app.get('/api/health', (req: Request, res: Response) => {
 
 // Active STUN & TURN Servers for cross-device & cross-network NAT traversal
 app.get('/api/ice-servers', async (req: Request, res: Response) => {
-  const meteredApiKey = process.env.METERED_API_KEY;
-  const meteredAppName = process.env.METERED_APP_NAME;
+  const meteredApiKey = process.env.METERED_API_KEY?.trim();
+  let meteredAppName = process.env.METERED_APP_NAME?.trim();
+
+  if (meteredAppName) {
+    meteredAppName = meteredAppName
+      .replace(/^https?:\/\//i, '')
+      .replace(/\.metered\.live.*$/i, '')
+      .replace(/\/.*$/, '')
+      .trim();
+  }
 
   if (meteredApiKey && meteredAppName) {
     try {
-      const response = await fetch(
-        `https://${meteredAppName}.metered.live/api/v1/turn/credentials?apiKey=${meteredApiKey}`
-      );
+      const url = `https://${meteredAppName}.metered.live/api/v1/turn/credentials?apiKey=${meteredApiKey}`;
+      const response = await fetch(url);
       if (response.ok) {
         const iceServers = await response.json();
-        return res.json({ success: true, iceServers, source: 'metered-cloud' });
+        if (Array.isArray(iceServers) && iceServers.length > 0) {
+          return res.json({ success: true, iceServers, source: 'metered-cloud' });
+        }
+      } else {
+        const errText = await response.text();
+        console.warn(`Metered fetch failed [${response.status}]:`, errText);
       }
     } catch (err: any) {
       console.warn('Metered TURN fetch error:', err.message);
