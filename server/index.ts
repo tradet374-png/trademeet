@@ -55,7 +55,7 @@ app.get('/api/health', (req: Request, res: Response) => {
 // Active STUN & TURN Servers for cross-device & cross-network NAT traversal
 app.get('/api/ice-servers', async (req: Request, res: Response) => {
   // Support all common casing and naming variations from Render environment
-  const meteredApiKey = (
+  let meteredApiKey = (
     (req.query.apiKey as string) ||
     process.env.METERED_API_KEY ||
     process.env.metered_api_key ||
@@ -81,38 +81,48 @@ app.get('/api/ice-servers', async (req: Request, res: Response) => {
     process.env.domain
   )?.trim();
 
+  if (meteredApiKey) {
+    meteredApiKey = meteredApiKey.replace(/^["'`\s]+|["'`\s]+$/g, '').trim();
+  }
+
   if (meteredAppName) {
     meteredAppName = meteredAppName
+      .replace(/^["'`\s]+|["'`\s]+$/g, '')
       .replace(/^https?:\/\//i, '')
       .replace(/\.metered\.live.*$/i, '')
       .replace(/\/.*$/, '')
       .trim();
   }
 
-  let lastError: string | null = null;
+  const attempts: Array<{ url: string; status: number; body: string }> = [];
 
   if (meteredApiKey && meteredAppName) {
-    // Try both apiKey and secretKey endpoint variations
-    const endpointsToTry = [
+    const urlsToTry = [
+      `https://${meteredAppName}.metered.live/api/v1/turn/credentials?apiKey=${encodeURIComponent(meteredApiKey)}`,
       `https://${meteredAppName}.metered.live/api/v1/turn/credentials?apiKey=${meteredApiKey}`,
-      `https://${meteredAppName}.metered.live/api/v1/turn/credentials?secretKey=${meteredApiKey}`,
-      `https://${meteredAppName}.metered.live/api/v1/turn/credential?secretKey=${meteredApiKey}`,
+      `https://${meteredAppName}.metered.live/api/v1/turn/credentials?secretKey=${encodeURIComponent(meteredApiKey)}`,
     ];
 
-    for (const url of endpointsToTry) {
+    for (const url of urlsToTry) {
       try {
         const response = await fetch(url);
+        const text = await response.text();
+        const maskedUrl = url.replace(/=(.*)$/, `=${meteredApiKey.slice(0, 4)}...${meteredApiKey.slice(-4)}`);
+        attempts.push({ url: maskedUrl, status: response.status, body: text.slice(0, 150) });
+
         if (response.ok) {
-          const iceServers = await response.json();
-          if (Array.isArray(iceServers) && iceServers.length > 0) {
-            console.log(`✅ Loaded active Metered TURN credentials from ${meteredAppName}`);
-            return res.json({ success: true, iceServers, source: 'metered-cloud' });
+          try {
+            const iceServers = JSON.parse(text);
+            if (Array.isArray(iceServers) && iceServers.length > 0) {
+              console.log(`✅ Loaded active Metered TURN credentials from ${meteredAppName}`);
+              return res.json({ success: true, iceServers, source: 'metered-cloud' });
+            }
+          } catch (e) {
+            // not json
           }
-        } else {
-          lastError = `Metered returned HTTP ${response.status}: ${await response.text()}`;
         }
       } catch (err: any) {
-        lastError = err.message;
+        attempts.push({ url, status: 0, body: err.message });
       }
     }
   }
@@ -145,7 +155,8 @@ app.get('/api/ice-servers', async (req: Request, res: Response) => {
       appName: meteredAppName || null,
       hasApiKey: Boolean(meteredApiKey),
       keyLength: meteredApiKey?.length || 0,
-      lastError,
+      keyPreview: meteredApiKey ? `${meteredApiKey.slice(0, 4)}...${meteredApiKey.slice(-4)}` : null,
+      attempts,
       matchedEnvKeys,
     },
   });
