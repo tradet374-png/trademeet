@@ -54,8 +54,32 @@ app.get('/api/health', (req: Request, res: Response) => {
 
 // Active STUN & TURN Servers for cross-device & cross-network NAT traversal
 app.get('/api/ice-servers', async (req: Request, res: Response) => {
-  const meteredApiKey = process.env.METERED_API_KEY?.trim();
-  let meteredAppName = process.env.METERED_APP_NAME?.trim();
+  // Support all common casing and naming variations from Render environment
+  const meteredApiKey = (
+    (req.query.apiKey as string) ||
+    process.env.METERED_API_KEY ||
+    process.env.metered_api_key ||
+    process.env.METERED_KEY ||
+    process.env.metered_key ||
+    process.env.API_KEY ||
+    process.env.api_key ||
+    process.env.METERED_SECRET ||
+    process.env.METERED_SECRET_KEY
+  )?.trim();
+
+  let meteredAppName = (
+    (req.query.appName as string) ||
+    process.env.METERED_APP_NAME ||
+    process.env.metered_app_name ||
+    process.env.METERED_DOMAIN ||
+    process.env.metered_domain ||
+    process.env.METERED_APP ||
+    process.env.metered_app ||
+    process.env.APP_NAME ||
+    process.env.app_name ||
+    process.env.DOMAIN ||
+    process.env.domain
+  )?.trim();
 
   if (meteredAppName) {
     meteredAppName = meteredAppName
@@ -65,25 +89,35 @@ app.get('/api/ice-servers', async (req: Request, res: Response) => {
       .trim();
   }
 
+  let lastError: string | null = null;
+
   if (meteredApiKey && meteredAppName) {
-    try {
-      const url = `https://${meteredAppName}.metered.live/api/v1/turn/credentials?apiKey=${meteredApiKey}`;
-      const response = await fetch(url);
-      if (response.ok) {
-        const iceServers = await response.json();
-        if (Array.isArray(iceServers) && iceServers.length > 0) {
-          return res.json({ success: true, iceServers, source: 'metered-cloud' });
+    // Try both apiKey and secretKey endpoint variations
+    const endpointsToTry = [
+      `https://${meteredAppName}.metered.live/api/v1/turn/credentials?apiKey=${meteredApiKey}`,
+      `https://${meteredAppName}.metered.live/api/v1/turn/credentials?secretKey=${meteredApiKey}`,
+      `https://${meteredAppName}.metered.live/api/v1/turn/credential?secretKey=${meteredApiKey}`,
+    ];
+
+    for (const url of endpointsToTry) {
+      try {
+        const response = await fetch(url);
+        if (response.ok) {
+          const iceServers = await response.json();
+          if (Array.isArray(iceServers) && iceServers.length > 0) {
+            console.log(`✅ Loaded active Metered TURN credentials from ${meteredAppName}`);
+            return res.json({ success: true, iceServers, source: 'metered-cloud' });
+          }
+        } else {
+          lastError = `Metered returned HTTP ${response.status}: ${await response.text()}`;
         }
-      } else {
-        const errText = await response.text();
-        console.warn(`Metered fetch failed [${response.status}]:`, errText);
+      } catch (err: any) {
+        lastError = err.message;
       }
-    } catch (err: any) {
-      console.warn('Metered TURN fetch error:', err.message);
     }
   }
 
-  // Verified high-performance STUN Servers (Google Global, Cloudflare Anycast, Nextcloud port 443)
+  // Fallback high-performance STUN Servers
   const iceServers = [
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
@@ -94,7 +128,27 @@ app.get('/api/ice-servers', async (req: Request, res: Response) => {
     { urls: 'stun:stun.nextcloud.com:443' },
   ];
 
-  res.json({ success: true, iceServers, source: 'default-global-stun' });
+  const matchedEnvKeys = Object.keys(process.env).filter(
+    (k) =>
+      k.toLowerCase().includes('metered') ||
+      k.toLowerCase().includes('turn') ||
+      k.toLowerCase().includes('domain') ||
+      k.toLowerCase().includes('key')
+  );
+
+  res.json({
+    success: true,
+    iceServers,
+    source: 'default-global-stun',
+    debug: {
+      hasAppName: Boolean(meteredAppName),
+      appName: meteredAppName || null,
+      hasApiKey: Boolean(meteredApiKey),
+      keyLength: meteredApiKey?.length || 0,
+      lastError,
+      matchedEnvKeys,
+    },
+  });
 });
 
 // List all active rooms

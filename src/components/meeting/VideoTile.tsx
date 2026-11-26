@@ -61,6 +61,31 @@ export const VideoTile: React.FC<VideoTileProps> = ({
     }
   }, [stream, isVideoOff, isLocal]);
 
+  // Listen directly for track additions on the MediaStream for mobile browsers
+  useEffect(() => {
+    if (!stream) return;
+    const handleTrackChange = () => {
+      if (videoRef.current) {
+        if (videoRef.current.srcObject !== stream) {
+          videoRef.current.srcObject = stream;
+        }
+        videoRef.current.play().catch(() => {});
+      }
+      if (audioRef.current && !isLocal) {
+        if (audioRef.current.srcObject !== stream) {
+          audioRef.current.srcObject = stream;
+        }
+        audioRef.current.play().catch(() => {});
+      }
+    };
+    stream.addEventListener('addtrack', handleTrackChange);
+    stream.addEventListener('removetrack', handleTrackChange);
+    return () => {
+      stream.removeEventListener('addtrack', handleTrackChange);
+      stream.removeEventListener('removetrack', handleTrackChange);
+    };
+  }, [stream, isLocal]);
+
   const canModerate =
     !isLocal &&
     (isHost || currentParticipant?.role === 'moderator') &&

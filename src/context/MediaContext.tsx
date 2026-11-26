@@ -308,11 +308,13 @@ export const MediaProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       let stream = remoteStreamsRef.current.get(targetId);
       if (!stream) {
         stream = event.streams[0] || new MediaStream();
-        remoteStreamsRef.current.set(targetId, stream);
       }
       if (!stream.getTracks().some((t) => t.id === event.track.id)) {
         stream.addTrack(event.track);
       }
+      // Create fresh MediaStream container so React useState & VideoTile detect track addition immediately
+      const freshStream = new MediaStream(stream.getTracks());
+      remoteStreamsRef.current.set(targetId, freshStream);
       setRemoteStreams(new Map(remoteStreamsRef.current));
     };
 
